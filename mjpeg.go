@@ -77,19 +77,25 @@ func (d *Decoder) DecodeRaw() ([]byte, error) {
 type Stream struct {
 	m        sync.Mutex
 	s        map[chan []byte]struct{}
+	path     string
+	aviWriter AviWriter
 	Interval time.Duration
+	RecordInterval  time.Duration
 }
 
-func NewStream() *Stream {
+func NewStream(path string,RecordInterval time.Duration) *Stream {
 	return &Stream{
 		s: make(map[chan []byte]struct{}),
+		path: path,
+		RecordInterval: RecordInterval,
 	}
 }
 
-func NewStreamWithInterval(interval time.Duration) *Stream {
+func NewStreamWithInterval(interval time.Duration,RecordInterval time.Duration) *Stream {
 	return &Stream{
 		s:        make(map[chan []byte]struct{}),
 		Interval: interval,
+		RecordInterval: RecordInterval,
 	}
 }
 
@@ -178,6 +184,38 @@ func (s *Stream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mw, err := m.CreatePart(h)
 		if err != nil {
 			break
+		}
+		if s.path != "" && s.aviWriter == nil{
+			OneImage, _, err := image.DecodeConfig(bytes.NewReader(b))
+			if err != nil {
+				fmt.Println("err1 = ", err)
+				return
+			}
+			timestamp := time.Now().Format("20060102150405")
+			s.aviWriter, err = NewAvi(fmt.Sprintf("%s/%s.avi",s.path,timestamp), int32(OneImage.Width), int32(OneImage.Height), 30)
+			if err !=nil{
+				break
+			}
+			defer func() {
+				if s.aviWriter != nil{
+					s.aviWriter.Close()
+				}
+			}()
+			go func() {
+				ticker := time.NewTicker(s.RecordInterval)
+				for {
+					select {
+					case <- ticker.C:
+						s.aviWriter.Close()
+						s.aviWriter = nil
+						ticker.Stop()
+						break
+					}
+				}
+			}()
+			s.aviWriter.AddFrame(b)
+		}else if s.aviWriter != nil {
+			s.aviWriter.AddFrame(b)
 		}
 		_, err = mw.Write(b)
 		if err != nil {
